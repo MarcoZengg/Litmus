@@ -4,11 +4,12 @@ Secrets are written as ${NAME} and read from environment variables, so a
 config file never contains them and can be saved with every run as is.
 """
 
+import copy
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import jmespath
 import yaml
@@ -26,6 +27,8 @@ TOP_LEVEL_FIELDS = {"name", "adapter", "request", "response", "behavior_map", "l
 REQUEST_FIELDS = {"method", "url", "headers", "body", "timeout_s"}
 LIMIT_FIELDS = {"concurrency", "requests_per_minute", "max_requests"}
 ENV_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+SENSITIVE_NAME = re.compile(r"auth|token|key|secret|cookie|password|signature", re.IGNORECASE)
+REDACTED = "<redacted>"
 
 
 @dataclass
@@ -184,6 +187,34 @@ def resolve_env(value: object, env: Mapping[str, str]) -> tuple[object, list[str
 
     resolved = walk(value)
     return resolved, sorted(set(missing))
+
+
+def redacted_config(config: AppConfig) -> tuple[dict, list[Issue]]:
+    """The config as written, safe to save with a run. A secret-looking header or URL parameter
+    written out literally, instead of as ${NAME}, is replaced with <redacted>."""
+    saved = copy.deepcopy(config.raw)
+    request = saved.get("request")
+    if not isinstance(request, dict):
+        return saved, []
+    issues = []
+    headers = request.get("headers")
+    if isinstance(headers, dict):
+        for name, value in headers.items():
+            if SENSITIVE_NAME.search(str(name)) and "${" not in str(value):
+                headers[name] = REDACTED
+                issues.append(Issue(config.path.name, f"header {name} has a literal secret; "
+                                                      "write it as ${NAME} and set it in your environment"))
+    url = request.get("url")
+    if isinstance(url, str):
+        parts = urlsplit(url)
+        query = parse_qsl(parts.query, keep_blank_values=True)
+        if any(SENSITIVE_NAME.search(name) and "${" not in value for name, value in query):
+            safe = [(name, REDACTED if SENSITIVE_NAME.search(name) and "${" not in value else value)
+                    for name, value in query]
+            request["url"] = urlunsplit(parts._replace(query=urlencode(safe, safe="${}")))
+            issues.append(Issue(config.path.name, "the request URL has a literal secret; "
+                                                  "write it as ${NAME} and set it in your environment"))
+    return saved, issues
 
 
 def check_env(config: AppConfig, env: Mapping[str, str]) -> list[Issue]:

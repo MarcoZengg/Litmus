@@ -23,10 +23,7 @@ def test_version():
 def test_stubs_say_not_implemented(tmp_path):
     dataset = tmp_path / "dataset"
     dataset.mkdir()
-    config = tmp_path / "app.yaml"
-    config.write_text("name: example\n")
     calls = {
-        "run": ["run", str(dataset), "--app", str(config), "--name", "baseline"],
         "report": ["report", str(dataset)],
         "compare": ["compare", str(dataset), str(dataset)],
     }
