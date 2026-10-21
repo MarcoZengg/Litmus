@@ -64,6 +64,20 @@ lm-evaluation-harness serve them).
 - **Multi-turn conversations and streaming responses.**
 - **Generating test questions automatically.**
 
+### Commands
+
+| Command | What it does |
+|---|---|
+| `litmus validate <dataset>` | Checks the dataset against section 5's rules, and the app config's templates against every record. Makes no calls |
+| `litmus run <dataset> --app app.yaml --name baseline` | Shows the estimated number of app and judge calls, asks to continue, then runs and writes `runs/<date>_<name>/`. `--repeats` overrides the default of 3. `--yes` skips the question in CI |
+| `litmus report <run>` | Shows the metrics for one run, hiding text when the dataset is private |
+| `litmus compare <baseline> <candidate>` | Paired comparison with a verdict per metric (section 7). `--gates gates.yaml` makes it exit non-zero when a gate fails, so CI can use it. `--force` overrides the comparability check |
+
+### Stack
+
+Python 3.12, Typer (commands), httpx (HTTP adapter), PyYAML, jmespath, NumPy
+(bootstrap) and pytest.
+
 ## 4. How apps connect
 
 **Decided:**
@@ -126,7 +140,7 @@ request:
     Authorization: "Bearer ${X200_BOT_TOKEN}"   # read from an environment variable
   body:
     message: "{{input}}"
-    category: "{{metadata.category}}"
+    category: "{{metadata.category?}}"          # left out when a record has none
   timeout_s: 60
 response:                    # JMESPath expressions into the JSON reply
   actual_output: reply.answer
@@ -147,9 +161,12 @@ limits:
   max_requests: 300          # hard stop for this run
 ```
 
-Templates can use `{{input}}` and `{{metadata.<key>}}`. If a record lacks a
-key that the template needs, the dataset fails validation before the run
-starts, so no paid calls are wasted.
+Templates can use `{{input}}` and `{{metadata.<key>}}`. A `?` makes a key
+optional: `{{metadata.category?}}` leaves that field out of the request when a
+record has no `category`. That matters for questions that are deliberately
+vague, like `clarify` questions without a product. If a record lacks a
+*required* key, the dataset fails validation before the run starts, so no paid
+calls are wasted.
 
 ### OpenAI-compatible adapter
 
@@ -226,7 +243,7 @@ my-dataset/
 ├── dataset.jsonl      # the questions, written by hand
 └── runs/              # written by Litmus, one folder per run
     └── 2026-11-02_baseline/
-        ├── run.yaml       # app, adapter, model settings, judge, Litmus version
+        ├── run.yaml       # app, adapter, model settings, judge, dataset hash, Litmus version
         └── records.jsonl  # one line per question per repeat
 ```
 
@@ -345,7 +362,9 @@ Litmus writes one line per question per repeat: `id` (the dataset record),
 | `exact_match` | black-box | `expected_output` | pass/fail after trimming whitespace and case | pass rate | no |
 | `json_schema` | black-box | a JSON schema in the run config | pass/fail: parses and validates | pass rate | no |
 | `rubric` | black-box | criteria written in the run config | pass/fail + reason | pass rate | yes |
-| `behavior` | black-box | `expected_behavior` | match / no match | accuracy, matrix, two error rates | via status or judge |
+| `behavior_accuracy` | black-box | `expected_behavior` | match / no match | accuracy, plus the matrix and the two rates below | via status or judge |
+| `unsafe_answer_rate` | black-box | `expected_behavior` of `clarify`, `refuse` or `handoff` | answered or not | rate (lower is better) | via status or judge |
+| `missed_answer_rate` | black-box | `expected_behavior` of `answer` | didn't answer or did | rate (lower is better) | via status or judge |
 | `correctness` | black-box | `expected_output`; expected behavior `answer` or `partial` | pass/fail + reason | pass rate | yes |
 | `recall@k` | glass-box | `reference_context_ids` | share of groups with an ID in the top k | mean, at k = 1, 3, 5 | no |
 | `mrr` | glass-box | `reference_context_ids` | 1 / rank of first passage in any group (0 if none) | mean | no |
@@ -425,8 +444,9 @@ of the same question aren't independent.
 ### Comparing two runs
 
 **Runs must be comparable.** Litmus refuses to compare runs that used a
-different dataset version, judge model or judge prompt (prompt hashes are in
-`run.yaml`). A `--force` option overrides this, with a warning. A different
+different dataset, judge model or judge prompt. `run.yaml` stores a hash of
+`dataset.jsonl` and of each judge prompt, so an edited dataset counts as
+different even if nobody bumped its version. A `--force` option overrides this, with a warning. A different
 `kb_version` gives a warning only.
 
 **How the comparison works:**
@@ -463,13 +483,14 @@ The run config lists which metrics gate CI:
 ```yaml
 gates:
   correctness:        {min_effect: 0.02}
-  behavior:           {min_effect: 0.02}
+  behavior_accuracy:  {min_effect: 0.02}
   unsafe_answer_rate: {min_effect: 0.02}   # lower is better
   errors:             {max: 0.05}          # absolute cap, no comparison needed
 ```
 
 CI fails if any gate metric shows a regression, or breaks an absolute cap.
-Defaults: correctness, behavior, unsafe answer rate, and errors capped at 5%.
+Defaults: `correctness`, `behavior_accuracy`, `unsafe_answer_rate`, and
+`errors` capped at 5%.
 
 **Only overall numbers gate.** Breakdowns by `source` and `tags` are shown but
 never fail CI. With many breakdowns, some would show a "significant" drop by
@@ -581,8 +602,8 @@ Litmus.
 | When | Milestone | Done means |
 |---|---|---|
 | Week 1 | Design and data | This doc reviewed; first 50 case-study questions labeled privately; demo manual drafted |
-| Week 2 | Baseline | Litmus runs the case-study app (HTTP adapter) and the demo app; all section 6 metrics with intervals |
-| Week 3 | Trustworthy evals | Judge checked against hand labels; paired comparisons and gates working on the demo |
+| Week 2 | Baseline | Litmus runs the case-study app through the HTTP adapter; behavior, retrieval, latency, error and cost metrics recorded |
+| Week 3 | Trustworthy evals | Judge metrics (correctness, faithfulness, rubric) added and checked against hand labels; intervals, paired comparisons and gates working |
 | Weeks 3–4 | Public demo | Recorded runs in place; the five-minute path works from a fresh clone |
 | Weeks 3–4 | Fine-tuning gate | Small open models scored against the case-study baseline; go/no-go decision |
 | Before the case study launches | Launch check | The case-study app passes gates set in advance |
@@ -600,5 +621,11 @@ Litmus.
 - Should the minimum change size for latency and cost be relative (e.g. 10%)
   rather than in absolute units?
 - Correcting judge-metric scores for measured judge error (after v1).
+- **Comparing answer models inside a RAG app** (the fine-tuning gate). The
+  OpenAI-compatible adapter only sends the question, without retrieved
+  passages, so it isn't a fair test of a RAG answer model. Either switch the
+  model inside the app (e.g. a staging setting) and call it through the HTTP
+  adapter, or replay saved retrieval results to the model. Decide before
+  week 3.
 - For apps with daily call caps, are 3 repeats affordable, or does the dataset
   need splitting across days?
