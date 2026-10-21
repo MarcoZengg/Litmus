@@ -1,0 +1,27 @@
+# The invented app config from docs/design.md, section 4.
+name: x200-support-bot
+adapter: http
+request:
+  method: POST
+  url: https://staging.example.com/api/chat
+  headers:
+    Authorization: "Bearer ${X200_BOT_TOKEN}"
+  body:
+    message: "{{input}}"
+    category: "{{metadata.category?}}"
+  timeout_s: 60
+response:
+  actual_output: reply.answer
+  retrieved_context_ids: debug.retrieved[*].id
+  status: reply.status
+  cached: reply.from_cache
+behavior_map:
+  ok: answer
+  partial: partial
+  need_more_info: clarify
+  out_of_scope: refuse
+  escalate: handoff
+limits:
+  concurrency: 1
+  requests_per_minute: 20
+  max_requests: 300

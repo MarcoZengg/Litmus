@@ -1,5 +1,6 @@
 from typer.testing import CliRunner
 
+from conftest import X200, write_records
 from litmus import __version__
 from litmus.cli import app
 
@@ -25,7 +26,6 @@ def test_stubs_say_not_implemented(tmp_path):
     config = tmp_path / "app.yaml"
     config.write_text("name: example\n")
     calls = {
-        "validate": ["validate", str(dataset)],
         "run": ["run", str(dataset), "--app", str(config), "--name", "baseline"],
         "report": ["report", str(dataset)],
         "compare": ["compare", str(dataset), str(dataset)],
@@ -39,3 +39,36 @@ def test_stubs_say_not_implemented(tmp_path):
 def test_missing_dataset_is_a_usage_error(tmp_path):
     result = runner.invoke(app, ["validate", str(tmp_path / "missing")])
     assert result.exit_code == 2
+
+
+def test_validate_a_good_dataset():
+    result = runner.invoke(app, ["validate", str(X200), "--app", str(X200 / "app.yaml")])
+    assert result.exit_code == 0, result.output
+    assert "Dataset    x200-examples (version 1)" in result.output
+    assert "Records    4" in result.output
+    assert "Behaviors  answer 2, clarify 1, handoff 1" in result.output
+    assert "Sources    staff 2, real_traffic 2" in result.output
+    assert "Hash       sha256:" in result.output
+    assert result.output.rstrip().endswith("Valid.")
+
+
+def test_validate_reports_errors_and_warnings(x200):
+    write_records(x200, '{"id": "a", "input": "q", "expected_behavior": "answer"}',
+                  '{"id": "b", "input": "q", "source": "customer"}')
+    result = runner.invoke(app, ["validate", str(x200)])
+    assert result.exit_code == 1
+    assert "Warnings (1):\n  a: expects an answer" in result.output
+    assert "Errors (1):\n  b: 'source' must be one of" in result.output
+    assert "Not valid: 1 error(s)." in result.output
+
+
+def test_validate_checks_templates_against_records(x200):
+    (x200 / "app.yaml").write_text('request:\n  body:\n    category: "{{metadata.category}}"\n', encoding="utf-8")
+    result = runner.invoke(app, ["validate", str(x200), "--app", str(x200 / "app.yaml")])
+    assert result.exit_code == 1
+    assert "metadata.category: the request template needs it, but 4 record(s)" in result.output
+
+
+def test_validate_never_prints_question_text():
+    result = runner.invoke(app, ["validate", str(X200)])
+    assert "battery" not in result.output

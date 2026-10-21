@@ -1,0 +1,6 @@
+# The invented X200 examples from docs/design.md, section 5.
+name: x200-examples
+version: 1
+kb_version: "2026-10-15"
+language: en
+private: false

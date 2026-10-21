@@ -68,7 +68,7 @@ lm-evaluation-harness serve them).
 
 | Command | What it does |
 |---|---|
-| `litmus validate <dataset>` | Checks the dataset against section 5's rules, and the app config's templates against every record. Makes no calls |
+| `litmus validate <dataset> [--app app.yaml]` | Checks the dataset against section 5's rules. With `--app`, also checks the app config's request templates against every record. Makes no calls |
 | `litmus run <dataset> --app app.yaml --name baseline` | Shows the estimated number of app and judge calls, asks to continue, then runs and writes `runs/<date>_<name>/`. `--repeats` overrides the default of 3. `--yes` skips the question in CI |
 | `litmus report <run>` | Shows the metrics for one run, hiding text when the dataset is private |
 | `litmus compare <baseline> <candidate>` | Paired comparison with a verdict per metric (section 7). `--gates gates.yaml` makes it exit non-zero when a gate fails, so CI can use it. `--force` overrides the comparability check |

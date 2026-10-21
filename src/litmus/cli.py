@@ -1,11 +1,14 @@
 """The litmus command line. Commands are described in docs/design.md, section 3."""
 
+from collections import Counter
 from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
 
 from litmus import __version__
+from litmus.dataset import BEHAVIORS, SOURCES, Dataset, load_dataset
+from litmus.templates import check_app_templates
 
 app = typer.Typer(
     help="Evaluate LLM and RAG apps, and tell real changes from noise.",
@@ -36,10 +39,52 @@ def main(
     pass
 
 
+def counts(values: list[str | None], order: tuple[str, ...]) -> str:
+    tally = Counter(value or "unlabeled" for value in values)
+    names = [name for name in order if name in tally] + sorted(set(tally) - set(order))
+    return ", ".join(f"{name} {tally[name]}" for name in names)
+
+
+def summary(dataset: Dataset) -> list[str]:
+    lines = []
+    if dataset.manifest:
+        lines.append(f"Dataset    {dataset.manifest.name} (version {dataset.manifest.version})")
+    lines.append(f"Records    {len(dataset.records)}")
+    if dataset.records:
+        lines.append(f"Behaviors  {counts([r.expected_behavior for r in dataset.records], BEHAVIORS)}")
+        lines.append(f"Sources    {counts([r.source for r in dataset.records], SOURCES)}")
+    if dataset.sha256:
+        lines.append(f"Hash       sha256:{dataset.sha256[:12]}")
+    if dataset.manifest:
+        lines.append(f"Private    {'yes' if dataset.manifest.private else 'no'}")
+    return lines
+
+
 @app.command()
-def validate(dataset: ExistingPath) -> None:
+def validate(
+    dataset: ExistingPath,
+    app_config: Annotated[
+        Optional[Path],
+        typer.Option("--app", exists=True, help="Also check this app config's request templates against every record."),
+    ] = None,
+) -> None:
     """Check a dataset, and an app config's templates, without making any calls."""
-    not_implemented("validate")
+    loaded = load_dataset(dataset)
+    errors = list(loaded.errors)
+    if app_config is not None:
+        errors += check_app_templates(app_config, loaded.records)
+
+    for line in summary(loaded):
+        typer.echo(line)
+    for title, issues in (("Warnings", loaded.warnings), ("Errors", errors)):
+        if issues:
+            typer.echo(f"\n{title} ({len(issues)}):")
+            for issue in issues:
+                typer.echo(f"  {issue}")
+    if errors:
+        typer.echo(f"\nNot valid: {len(errors)} error(s).")
+        raise typer.Exit(code=1)
+    typer.echo("\nValid.")
 
 
 @app.command()

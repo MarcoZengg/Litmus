@@ -6,7 +6,8 @@ Litmus runs each test question several times, compares two runs question by
 question, and reports every score with a range. A change counts as real only
 when the evidence supports it.
 
-**Status:** early development. The commands exist but don't do anything yet.
+**Status:** early development. `litmus validate` works; `run`, `report` and
+`compare` are coming.
 
 ## Docs
 
@@ -18,7 +19,7 @@ when the evidence supports it.
 ## Commands
 
 ```text
-litmus validate <dataset>
+litmus validate <dataset> [--app app.yaml]
 litmus run <dataset> --app app.yaml --name baseline
 litmus report <run>
 litmus compare <baseline-run> <candidate-run>
