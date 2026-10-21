@@ -197,7 +197,13 @@ the judge decided.
 
 ### Errors, timeouts and limits
 
-- **No retries by default.** A `retries: N` option exists for users who want it.
+- **No retries by default.** With `retries: N`, only timeouts, connection
+  errors, HTTP 429 and 5xx are retried, waiting 1, 2, 4… seconds (at most 10)
+  in between. Every attempt counts toward `max_requests`.
+- **Redirects aren't followed.** A 3xx reply is an error, so a request can't be
+  sent on to a host outside `allowed_hosts`.
+- **GET requests** send the body as query parameters; other methods send it as
+  JSON.
 - **These count as errors:** a non-2xx HTTP status, a timeout, invalid JSON,
   or an `actual_output` expression that finds nothing.
 - **A failed call** sets `error`. The question is scored as failed for answer

@@ -63,10 +63,34 @@ def test_validate_reports_errors_and_warnings(x200):
 
 
 def test_validate_checks_templates_against_records(x200):
-    (x200 / "app.yaml").write_text('request:\n  body:\n    category: "{{metadata.category}}"\n', encoding="utf-8")
+    config = (x200 / "app.yaml").read_text(encoding="utf-8").replace("{{metadata.category?}}", "{{metadata.category}}")
+    (x200 / "app.yaml").write_text(config, encoding="utf-8")
     result = runner.invoke(app, ["validate", str(x200), "--app", str(x200 / "app.yaml")])
     assert result.exit_code == 1
     assert "metadata.category: the request template needs it, but 4 record(s)" in result.output
+
+
+def test_validate_reports_app_config_errors(x200):
+    (x200 / "app.yaml").write_text("adapter: http\n", encoding="utf-8")
+    result = runner.invoke(app, ["validate", str(x200), "--app", str(x200 / "app.yaml")])
+    assert result.exit_code == 1
+    assert "app.yaml: 'request' is required for the http adapter" in result.output
+
+
+def test_validate_enforces_allowed_hosts(x200):
+    with open(x200 / "dataset.yaml", "a", encoding="utf-8") as manifest:
+        manifest.write("allowed_hosts: [bot.example.org]\n")
+    result = runner.invoke(app, ["validate", str(x200), "--app", str(x200 / "app.yaml")])
+    assert result.exit_code == 1
+    assert "host staging.example.com isn't in the dataset's allowed_hosts" in result.output
+
+
+def test_validate_warns_about_unset_secrets(monkeypatch):
+    monkeypatch.delenv("X200_BOT_TOKEN", raising=False)
+    result = runner.invoke(app, ["validate", str(X200), "--app", str(X200 / "app.yaml")])
+    assert result.exit_code == 0
+    assert "App        x200-support-bot (http, staging.example.com)" in result.output
+    assert "app.yaml: environment variable X200_BOT_TOKEN is not set" in result.output
 
 
 def test_validate_never_prints_question_text():

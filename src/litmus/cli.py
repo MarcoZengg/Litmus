@@ -1,14 +1,17 @@
 """The litmus command line. Commands are described in docs/design.md, section 3."""
 
+import os
 from collections import Counter
 from pathlib import Path
 from typing import Annotated, Optional
+from urllib.parse import urlsplit
 
 import typer
 
 from litmus import __version__
+from litmus.appconfig import check_allowed, check_env, load_app_config
 from litmus.dataset import BEHAVIORS, SOURCES, Dataset, load_dataset
-from litmus.templates import check_app_templates
+from litmus.templates import check_request_templates
 
 app = typer.Typer(
     help="Evaluate LLM and RAG apps, and tell real changes from noise.",
@@ -71,12 +74,23 @@ def validate(
     """Check a dataset, and an app config's templates, without making any calls."""
     loaded = load_dataset(dataset)
     errors = list(loaded.errors)
+    warnings = list(loaded.warnings)
+    lines = summary(loaded)
     if app_config is not None:
-        errors += check_app_templates(app_config, loaded.records)
+        config, config_errors = load_app_config(app_config)
+        errors += config_errors
+        if config is not None:
+            target = urlsplit(config.request.url).hostname if config.request else config.adapter
+            lines.append(f"App        {config.name} ({config.adapter}, {target})")
+            errors += check_request_templates(config, loaded.records)
+            if loaded.manifest is not None:
+                errors += check_allowed(loaded.manifest, config, os.environ)
+            # Secrets may only be set where runs happen, so this is a warning here.
+            warnings += check_env(config, os.environ)
 
-    for line in summary(loaded):
+    for line in lines:
         typer.echo(line)
-    for title, issues in (("Warnings", loaded.warnings), ("Errors", errors)):
+    for title, issues in (("Warnings", warnings), ("Errors", errors)):
         if issues:
             typer.echo(f"\n{title} ({len(issues)}):")
             for issue in issues:

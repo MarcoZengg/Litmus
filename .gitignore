@@ -7,9 +7,10 @@ dist/
 .venv/
 .pytest_cache/
 
-# Local secrets
+# Local secrets and personal Claude settings
 .env
 .env.*
+.claude/settings.local.json
 
 # Editors and OS files
 .vscode/
