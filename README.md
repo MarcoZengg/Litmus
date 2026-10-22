@@ -6,8 +6,8 @@ Litmus runs each test question several times, compares two runs question by
 question, and reports every score with a range. A change counts as real only
 when the evidence supports it.
 
-**Status:** early development. `litmus validate` and `litmus run` work;
-`report` and `compare` are coming.
+**Status:** early development. `litmus validate`, `run` and `report` work;
+`compare`, judge metrics and ranges are coming.
 
 ## Docs
 

@@ -12,6 +12,7 @@ from litmus import __version__
 from litmus.adapters import AdapterError, create_adapter
 from litmus.appconfig import AppConfig, check_allowed, check_env, load_app_config, redacted_config
 from litmus.dataset import BEHAVIORS, SOURCES, Dataset, Issue, load_dataset
+from litmus.report import ReportError, build_report, format_report, save_metrics
 from litmus.runner import RUN_NAME, execute_run, run_folder
 from litmus.templates import check_request_templates
 
@@ -197,9 +198,15 @@ def run(
 
 
 @app.command()
-def report(run_dir: Annotated[Path, typer.Argument(exists=True, metavar="RUN")]) -> None:
-    """Show the metrics for one run."""
-    not_implemented("report")
+def report(run_dir: Annotated[Path, typer.Argument(exists=True, file_okay=False, metavar="RUN")]) -> None:
+    """Show the metrics for one run, and save them as metrics.json in the run folder."""
+    try:
+        built = build_report(run_dir)
+    except ReportError as error:
+        typer.echo(f"Can't report: {error}.")
+        raise typer.Exit(code=1)
+    show(format_report(built), built.warnings, [])
+    typer.echo(f"\nSaved      {save_metrics(built, run_dir)}")
 
 
 @app.command()

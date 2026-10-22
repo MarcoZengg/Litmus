@@ -24,7 +24,6 @@ def test_stubs_say_not_implemented(tmp_path):
     dataset = tmp_path / "dataset"
     dataset.mkdir()
     calls = {
-        "report": ["report", str(dataset)],
         "compare": ["compare", str(dataset), str(dataset)],
     }
     for command, args in calls.items():

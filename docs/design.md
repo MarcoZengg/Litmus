@@ -70,7 +70,7 @@ lm-evaluation-harness serve them).
 |---|---|
 | `litmus validate <dataset> [--app app.yaml]` | Checks the dataset against section 5's rules. With `--app`, also checks the app config's request templates against every record. Makes no calls |
 | `litmus run <dataset> --app app.yaml --name baseline` | Runs every check `validate` does, with unset secrets as errors. Shows the estimated number of app and judge calls, asks to continue, then runs and writes `runs/<date>_<name>/`. Repeat 1 covers every question before repeat 2 starts, so a run stopped early covers as many questions as possible. Never overwrites an existing run. `--repeats` overrides the default of 3. `--yes` skips the question in CI. Exits non-zero if the run is incomplete |
-| `litmus report <run>` | Shows the metrics for one run, hiding text when the dataset is private |
+| `litmus report <run>` | Shows the metrics for one run, with breakdowns and the IDs of questions to look at, and saves aggregate numbers (no IDs, no text) as `metrics.json` in the run folder. Never shows question or answer text |
 | `litmus compare <baseline> <candidate>` | Paired comparison with a verdict per metric (section 7). `--gates gates.yaml` makes it exit non-zero when a gate fails, so CI can use it. `--force` overrides the comparability check |
 
 ### Stack
@@ -360,6 +360,12 @@ Litmus writes one line per question per repeat: `id` (the dataset record),
   skipped for that metric, and the report says so, e.g. "correctness: 52 of
   70 questions scored".
 - **Failed calls count as failures** in every metric except latency (section 4).
+  For the two behavior rates, a failed call gave the user no answer: it counts
+  as a missed answer, but not as an unsafe one.
+- **Unknown behavior waits for the judge.** A repeat whose behavior couldn't be
+  read from the app's status is left out of the behavior metrics, not counted
+  as wrong.
+- **MRR** uses the whole ranked list the app returned, not just the top 5.
 - **Breakdowns:** every metric is reported overall, by `source` and by `tags`.
   This is how "real customer questions" and "staff questions" get separate
   numbers.
