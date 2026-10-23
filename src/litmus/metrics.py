@@ -124,9 +124,18 @@ def applies(name: str, record: Record) -> bool:
     return bool(record.reference_context_ids)
 
 
-def question_metrics(records: list[Record], rows_by_id: dict[str, list[Row]]) -> list[Metric]:
+RETRIEVAL_METRICS = {f"recall@{k}" for k in RECALL_AT} | {"mrr"}
+
+
+def question_metrics(records: list[Record], rows_by_id: dict[str, list[Row]],
+                     glass_box: bool = True) -> list[Metric]:
+    """glass_box=False: the app returns no retrieved passages, so retrieval isn't measured at all,
+    not even as 0 for failed calls."""
     metrics = []
     for name, (scorer, lower) in QUESTION_METRICS.items():
+        if name in RETRIEVAL_METRICS and not glass_box:
+            metrics.append(Metric(name, None, 0, 0, lower_is_better=lower))
+            continue
         scores = question_scores(records, rows_by_id, scorer)
         total = sum(applies(name, record) for record in records)
         value = sum(scores.values()) / len(scores) if scores else None
@@ -171,7 +180,7 @@ def behavior_matrix(records: list[Record], rows_by_id: dict[str, list[Row]]) -> 
 
 
 def breakdown(records: list[Record], rows_by_id: dict[str, list[Row]],
-              group_of: Callable[[Record], list[str]]) -> dict[str, dict[str, float | None]]:
+              group_of: Callable[[Record], list[str]], glass_box: bool = True) -> dict[str, dict[str, float | None]]:
     """Question metrics per group (by source or by tag), as group -> metric -> value."""
     groups: dict[str, list[Record]] = defaultdict(list)
     for record in records:
@@ -180,7 +189,7 @@ def breakdown(records: list[Record], rows_by_id: dict[str, list[Row]],
     result = {}
     for group, members in sorted(groups.items()):
         values = {"questions": len(members)}
-        for metric in question_metrics(members, rows_by_id):
+        for metric in question_metrics(members, rows_by_id, glass_box):
             values[metric.name] = metric.value
         values["errors"] = call_metrics([row for r in members for row in rows_by_id.get(r.id, [])])[0].value
         result[group] = values

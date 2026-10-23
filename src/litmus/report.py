@@ -6,6 +6,7 @@ be shared as aggregate numbers.
 """
 
 import json
+import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -14,8 +15,8 @@ from pathlib import Path
 import yaml
 
 from litmus.dataset import BEHAVIORS, SOURCES, Dataset, Issue, load_dataset
-from litmus.metrics import (Metric, behavior_matrix, behavior_match, breakdown, call_metrics, missed_answer,
-                            question_metrics, unsafe_answer, worst_questions)
+from litmus.metrics import (RETRIEVAL_METRICS, Metric, behavior_matrix, behavior_match, breakdown, call_metrics,
+                            missed_answer, question_metrics, unsafe_answer, worst_questions)
 from litmus.runner import RECORDS_FILE, RUN_FILE
 
 METRICS_FILE = "metrics.json"
@@ -24,6 +25,12 @@ SHOWN_IDS = 10
 
 class ReportError(Exception):
     pass
+
+
+def is_glass_box(run: dict) -> bool:
+    """Whether the run's app config reads retrieved passages from the reply (docs/design.md, section 4)."""
+    response = (run.get("app") or {}).get("config", {}).get("response") or {}
+    return "retrieved_context_ids" in response
 
 
 @dataclass
@@ -68,13 +75,14 @@ def build_report(folder: Path) -> Report:
         rows_by_id[row["id"]].append(row)
 
     records = dataset.records
+    glass_box = is_glass_box(run)
     return Report(
         run=run,
         dataset=dataset,
-        metrics=question_metrics(records, rows_by_id) + call_metrics(rows),
+        metrics=question_metrics(records, rows_by_id, glass_box) + call_metrics(rows),
         matrix=behavior_matrix(records, rows_by_id),
-        by_source=breakdown(records, rows_by_id, lambda r: [r.source or "unlabeled"]),
-        by_tag=breakdown(records, rows_by_id, lambda r: r.tags),
+        by_source=breakdown(records, rows_by_id, lambda r: [r.source or "unlabeled"], glass_box),
+        by_tag=breakdown(records, rows_by_id, lambda r: r.tags, glass_box),
         errors_by_type=dict(Counter(row["error"]["type"] for row in rows if row["error"] is not None)),
         to_check={
             "Missed answers": worst_questions(records, rows_by_id, missed_answer, lambda v: v == 1),
@@ -115,16 +123,48 @@ def format_value(metric_name: str, value: float | None) -> str:
     return f"{value * 100:.1f}%"
 
 
+def _width(text: str) -> int:
+    """Terminal width: Chinese, Japanese and Korean characters take two columns."""
+    return sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in text)
+
+
+def _pad(text: str, size: int, right: bool = False) -> str:
+    fill = " " * max(0, size - _width(text))
+    return fill + text if right else text + fill
+
+
+GROUP_COLUMNS = (("behavior_accuracy", "behavior"), ("unsafe_answer_rate", "unsafe"), ("missed_answer_rate", "missed"),
+                 ("recall@5", "recall@5"), ("mrr", "mrr"), ("errors", "errors"))
+
+
+def _group_table(title: str, groups: dict[str, dict], order: tuple[str, ...], glass_box: bool) -> list[str]:
+    """One row per group, so many groups (or long names) stay readable."""
+    names = [n for n in order if n in groups] + sorted(set(groups) - set(order))
+    columns = [(key, label) for key, label in GROUP_COLUMNS if glass_box or key not in RETRIEVAL_METRICS]
+    name_width = max(24, *(_width(n) + 2 for n in names))
+    lines = ["", title, _pad("", name_width) + _pad("questions", 11, right=True)
+             + "".join(_pad(label, 10, right=True) for _, label in columns)]
+    for name in names:
+        values = groups[name]
+        lines.append(_pad(name, name_width) + _pad(str(values["questions"]), 11, right=True)
+                     + "".join(_pad(format_value(key, values[key]), 10, right=True) for key, _ in columns))
+    return lines
+
+
 def format_report(report: Report) -> list[str]:
     run, manifest = report.run, report.dataset.manifest
+    glass_box = is_glass_box(run)
     lines = [
         f"Run        {run['name']} ({run['status']}, {run['repeats']} repeats, {run['counts']['written']} calls)",
         f"Dataset    {manifest.name} (version {manifest.version})",
         f"App        {run['app']['config'].get('name', run['app']['file'])}",
-        "",
-        f"{'Metric':<24}{'Value':>10}   Coverage",
     ]
+    if not glass_box:
+        lines.append("Retrieval  not measured: the app config doesn't read retrieved passages (black-box)")
+    lines += ["", f"{'Metric':<24}{'Value':>10}   Coverage"]
     for metric in report.metrics:
+        if metric.name in RETRIEVAL_METRICS and not glass_box:
+            continue
         note = "  (lower is better)" if metric.lower_is_better else ""
         coverage = f"{metric.scored} of {metric.total} {metric.unit}"
         lines.append(f"{metric.name:<24}{format_value(metric.name, metric.value):>10}   {coverage}{note}")
@@ -141,14 +181,8 @@ def format_report(report: Report) -> list[str]:
                 lines.append(f"{expected:<10}" + "".join(f"{row.get(c, 0):>9}" for c in columns))
 
     for title, groups, order in (("By source", report.by_source, SOURCES), ("By tag", report.by_tag, ())):
-        if not groups or (title == "By source" and len(groups) == 1):
-            continue
-        names = [n for n in order if n in groups] + sorted(set(groups) - set(order))
-        shown = ("behavior_accuracy", "unsafe_answer_rate", "missed_answer_rate", "recall@5", "mrr", "errors")
-        lines += ["", title, f"{'':<24}" + "".join(f"{n[:14]:>15}" for n in names),
-                  f"{'questions':<24}" + "".join(f"{groups[n]['questions']:>15}" for n in names)]
-        for metric in shown:
-            lines.append(f"{metric:<24}" + "".join(f"{format_value(metric, groups[n][metric]):>15}" for n in names))
+        if groups and not (title == "By source" and len(groups) == 1):
+            lines += _group_table(title, groups, order, glass_box)
 
     flagged = {title: items for title, items in report.to_check.items() if items}
     if flagged:

@@ -366,6 +366,9 @@ Litmus writes one line per question per repeat: `id` (the dataset record),
   read from the app's status is left out of the behavior metrics, not counted
   as wrong.
 - **MRR** uses the whole ranked list the app returned, not just the top 5.
+- **Retrieval metrics need a glass-box app.** If the app config doesn't read
+  `retrieved_context_ids`, recall and MRR aren't measured at all, and a failed
+  call doesn't count as a retrieval score of 0.
 - **Breakdowns:** every metric is reported overall, by `source` and by `tags`.
   This is how "real customer questions" and "staff questions" get separate
   numbers.

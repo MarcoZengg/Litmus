@@ -36,13 +36,17 @@ ROWS = [
 ]
 
 
-def make_run(x200, rows=ROWS, status="complete", sha256=None):
+GLASS_BOX = {"actual_output": "reply.answer", "retrieved_context_ids": "debug.retrieved[*].id"}
+BLACK_BOX = {"actual_output": "reply.answer"}
+
+
+def make_run(x200, rows=ROWS, status="complete", sha256=None, response=GLASS_BOX):
     folder = x200 / "runs" / "2026-10-21_baseline"
     folder.mkdir(parents=True)
     (folder / "records.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     run = {"name": "baseline", "status": status, "stop_reason": None if status == "complete" else "interrupted",
            "repeats": 3, "dataset": {"sha256": sha256 or load_dataset(x200).sha256},
-           "app": {"file": "app.yaml", "config": {"name": "x200-support-bot"}},
+           "app": {"file": "app.yaml", "config": {"name": "x200-support-bot", "response": response}},
            "counts": {"written": len(rows)}}
     (folder / "run.yaml").write_text(yaml.safe_dump(run), encoding="utf-8")
     return folder
@@ -84,10 +88,25 @@ def test_call_metrics(x200):
     assert report.errors_by_type == {"timeout": 1}
 
 
-def test_black_box_runs_have_no_retrieval_scores(x200):
+def test_glass_box_replies_without_passages_are_skipped(x200):
     rows = [{**r, "retrieved_context_ids": None} for r in ROWS if r["error"] is None]
     m = metrics(build_report(make_run(x200, rows)))
     assert m["recall@5"].value is None and (m["recall@5"].scored, m["recall@5"].total) == (0, 2)
+
+
+def test_black_box_apps_have_no_retrieval_metrics_even_with_errors(x200):
+    # Found by the first real smoke test: a failed call used to score 0 recall for a black-box app.
+    rows = [{**r, "retrieved_context_ids": None} for r in ROWS]
+    report = build_report(make_run(x200, rows, response=BLACK_BOX))
+    m = metrics(report)
+    for name in ("recall@1", "recall@3", "recall@5", "mrr"):
+        assert m[name].value is None and (m[name].scored, m[name].total) == (0, 0)
+    assert report.by_tag["battery"]["recall@5"] is None
+    assert m["missed_answer_rate"].value == pytest.approx((1 / 3 + 0) / 2)  # other metrics unchanged
+
+    output = runner.invoke(app, ["report", str(x200 / "runs" / "2026-10-21_baseline")]).output
+    assert "Retrieval  not measured" in output
+    assert "recall@1" not in output and "mrr" not in output
 
 
 def test_matrix_and_breakdowns(x200):
@@ -129,6 +148,21 @@ def test_report_command(x200):
     assert saved["metrics"]["behavior_accuracy"]["scored"] == 3
     assert saved["dataset_matches_run"] is True
     assert "q-0001" not in json.dumps(saved)  # aggregate numbers only
+
+
+def test_group_tables_have_one_row_per_group_and_align_wide_characters(x200):
+    from litmus.report import _width
+    assert _width("空气净化器") == 10 and _width("abc") == 3
+    records = [json.loads(line) for line in (x200 / "dataset.jsonl").read_text(encoding="utf-8").splitlines()]
+    records[0]["tags"] = ["空气净化器"]
+    (x200 / "dataset.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records),
+                                        encoding="utf-8")
+    output = runner.invoke(app, ["report", str(make_run(x200))]).output
+    tag_rows = output.split("By tag\n")[1].split("\n\n")[0].splitlines()
+    header, rows = tag_rows[0], tag_rows[1:]
+    assert header.split() == ["questions", "behavior", "unsafe", "missed", "recall@5", "mrr", "errors"]
+    assert [row.split()[0] for row in rows] == ["maintenance", "noise", "空气净化器"]
+    assert len({_width(row) for row in tag_rows}) == 1  # every row lines up
 
 
 def test_report_never_shows_question_text(x200):
