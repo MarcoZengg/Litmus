@@ -1,0 +1,17 @@
+Classify what a customer-support assistant did in its reply. Pick exactly one:
+
+- answer: answered the question fully
+- partial: answered part of it and said what it can't confirm
+- clarify: asked the user for missing details, such as which product or model
+- refuse: declined because the request is off topic or not allowed
+- handoff: directed the user to a person instead of answering
+
+If the reply contains any real answer, choose answer or partial, even if it also suggests contacting a person.
+
+Question:
+$question
+
+Assistant's reply:
+$answer
+
+Reply with JSON only: {"behavior": "answer", "partial", "clarify", "refuse" or "handoff", "reason": "<one short sentence>"}

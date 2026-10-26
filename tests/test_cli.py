@@ -10,7 +10,7 @@ runner = CliRunner()
 def test_help_lists_every_command():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    for command in ("validate", "run", "report", "compare"):
+    for command in ("validate", "run", "judge", "label", "report", "compare"):
         assert command in result.output
 
 
@@ -18,18 +18,6 @@ def test_version():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
     assert __version__ in result.output
-
-
-def test_stubs_say_not_implemented(tmp_path):
-    dataset = tmp_path / "dataset"
-    dataset.mkdir()
-    calls = {
-        "compare": ["compare", str(dataset), str(dataset)],
-    }
-    for command, args in calls.items():
-        result = runner.invoke(app, args)
-        assert result.exit_code == 1, command
-        assert f"litmus {command} is not implemented yet." in result.output
 
 
 def test_missing_dataset_is_a_usage_error(tmp_path):

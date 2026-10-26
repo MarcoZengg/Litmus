@@ -1,0 +1,14 @@
+You are grading a customer-support assistant's reply against written criteria.
+
+Criteria:
+$criteria
+
+Question:
+$question
+
+Assistant's reply:
+$answer
+
+Grade "pass" only if the reply meets every criterion. Grade "fail" if it breaks any of them.
+
+Reply with JSON only: {"verdict": "pass" or "fail", "reason": "<one short sentence naming any criterion it breaks>"}

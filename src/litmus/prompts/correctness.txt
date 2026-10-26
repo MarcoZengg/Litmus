@@ -1,0 +1,16 @@
+You are grading a customer-support assistant's answer against a reference answer.
+
+Question:
+$question
+
+Reference answer (the facts a correct answer must contain):
+$reference
+
+Assistant's answer:
+$answer
+
+Grade "pass" if the assistant's answer states the facts the question asks about, consistent with the reference, and contradicts nothing in it. Wording, length, language and polite extras don't matter. Extra details are fine unless they contradict the reference.
+
+Grade "fail" if a fact the question asks about is missing or wrong, if the answer contradicts the reference, or if it doesn't address the question.
+
+Reply with JSON only: {"verdict": "pass" or "fail", "reason": "<one short sentence>"}

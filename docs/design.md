@@ -69,9 +69,11 @@ lm-evaluation-harness serve them).
 | Command | What it does |
 |---|---|
 | `litmus validate <dataset> [--app app.yaml]` | Checks the dataset against section 5's rules. With `--app`, also checks the app config's request templates against every record. Makes no calls |
-| `litmus run <dataset> --app app.yaml --name baseline` | Runs every check `validate` does, with unset secrets as errors. Shows the estimated number of app and judge calls, asks to continue, then runs and writes `runs/<date>_<name>/`. Repeat 1 covers every question before repeat 2 starts, so a run stopped early covers as many questions as possible. Never overwrites an existing run. `--repeats` overrides the default of 3. `--yes` skips the question in CI. Exits non-zero if the run is incomplete |
+| `litmus run <dataset> --app app.yaml --name baseline` | Runs every check `validate` does, with unset secrets as errors. Shows the estimated number of app and judge calls, asks to continue, then runs and writes `runs/<date>_<name>/`. Repeat 1 covers every question before repeat 2 starts, so a run stopped early covers as many questions as possible. Never overwrites an existing run. `--repeats` overrides the default of 3. `--yes` skips the question in CI. `--judge judge.yaml` grades the run when the app calls are done. Exits non-zero if the run or its judging is incomplete |
+| `litmus judge <run> --judge judge.yaml` | Grades a finished run with the judge model (section 6), without calling the app again, and writes `judgments.jsonl` and `judging.yaml` in the run folder. Shows the number of judge calls and asks to continue. Refuses a run that's already judged unless `--replace` is given. `--yes` skips the question |
+| `litmus label <run> --metric correctness` | Writes `labels-<metric>.csv` in the run folder: a sample (default 50) of the replies the judge grades for that metric, with the question, reference and answer, for you to label pass or fail by hand. Never shows the judge's verdicts, and never overwrites a sheet unless `--replace` is given (section 7) |
 | `litmus report <run>` | Shows the metrics for one run, with breakdowns and the IDs of questions to look at, and saves aggregate numbers (no IDs, no text) as `metrics.json` in the run folder. Never shows question or answer text |
-| `litmus compare <baseline> <candidate>` | Paired comparison with a verdict per metric (section 7). `--gates gates.yaml` makes it exit non-zero when a gate fails, so CI can use it. `--force` overrides the comparability check |
+| `litmus compare <baseline> <candidate>` | Paired comparison with a verdict per metric (section 7). Shows numbers only, no question IDs or text. `--gates gates.yaml` makes it exit non-zero when a gate fails, so CI can use it. `--force` overrides the comparability check |
 
 ### Stack
 
@@ -252,8 +254,12 @@ my-dataset/
 ├── dataset.jsonl      # the questions, written by hand
 └── runs/              # written by Litmus, one folder per run
     └── 2026-11-02_baseline/
-        ├── run.yaml       # app, adapter, model settings, judge, dataset hash, Litmus version
-        └── records.jsonl  # one line per question per repeat
+        ├── run.yaml         # app, adapter, model settings, dataset hash, Litmus version
+        ├── records.jsonl    # one line per question per repeat
+        ├── judging.yaml     # judge model, settings and prompt hashes (litmus judge)
+        ├── judgments.jsonl  # one line per question, repeat and judge metric
+        ├── labels-correctness.csv  # your hand labels, to check the judge (litmus label)
+        └── metrics.json     # aggregate numbers only (litmus report)
 ```
 
 Because results live beside the dataset, a private dataset's results stay in
@@ -379,11 +385,11 @@ Litmus writes one line per question per repeat: `id` (the dataset record),
 |---|---|---|---|---|---|
 | `exact_match` | black-box | `expected_output` | pass/fail after trimming whitespace and case | pass rate | no |
 | `json_schema` | black-box | a JSON schema in the run config | pass/fail: parses and validates | pass rate | no |
-| `rubric` | black-box | criteria written in the run config | pass/fail + reason | pass rate | yes |
+| `rubric` | black-box | criteria written in the judge config | pass/fail + reason | pass rate | yes |
 | `behavior_accuracy` | black-box | `expected_behavior` | match / no match | accuracy, plus the matrix and the two rates below | via status or judge |
 | `unsafe_answer_rate` | black-box | `expected_behavior` of `clarify`, `refuse` or `handoff` | answered or not | rate (lower is better) | via status or judge |
 | `missed_answer_rate` | black-box | `expected_behavior` of `answer` | didn't answer or did | rate (lower is better) | via status or judge |
-| `correctness` | black-box | `expected_output`; expected behavior `answer` or `partial` | pass/fail + reason | pass rate | yes |
+| `correctness` | black-box | `expected_output`; expected behavior `answer` | pass/fail + reason | pass rate | yes |
 | `recall@k` | glass-box | `reference_context_ids` | share of groups with an ID in the top k | mean, at k = 1, 3, 5 | no |
 | `mrr` | glass-box | `reference_context_ids` | 1 / rank of first passage in any group (0 if none) | mean | no |
 | `faithfulness` | glass-box | passage text (`retrieval_context`); app answered | pass/fail + unsupported claims | pass rate | yes |
@@ -411,19 +417,37 @@ Mixing up `answer` and `partial` shows in the matrix but counts in neither rate.
 
 ### The judge
 
+- **Judging is a separate step** (`litmus judge`, or `litmus run --judge`). It
+  reads a finished run folder, so a run can be judged, or re-judged with a new
+  model or prompt, without calling the app again.
+- **Any OpenAI-compatible chat model can judge.** A judge config names the
+  provider, base URL, model, the environment variable holding the API key, the
+  metrics to compute (default: correctness, faithfulness, behavior), rubric
+  criteria and limits. The provider must be in the dataset's
+  `allowed_providers` (section 8).
 - **Each judge metric has a written prompt in the repo**, with temperature 0.
-  The prompt's hash goes into `run.yaml`, so results from different prompt
+  Each prompt's hash goes into `judging.yaml`, so results from different prompt
   versions are never compared by mistake.
 - **Users can override a prompt per dataset,** for example to write it in the
   dataset's language.
 - **Correctness:** the judge sees the question, the reference answer and the
   app's answer. It passes when the app's answer states the same facts the
   question asks about, without contradicting the reference. Wording can differ.
+  Only questions expected to be answered in full are scored: a `partial`
+  answer leaves out part of the reference by design, so it's checked by
+  behavior instead.
 - **Faithfulness:** the judge sees the answer and the retrieved passage text. It
   passes when every factual claim in the answer is supported by those passages.
 - **Behavior (fallback when there's no status):** the judge sees the question
   and answer, picks one of the five behaviors using the definitions in
-  section 5, and gives a reason.
+  section 5, and gives a reason. The report marks these as decided by the judge.
+- **Some verdicts need no judge call.** A failed app call fails correctness,
+  faithfulness and rubric. A reply that clarified, refused or handed off fails
+  correctness and isn't checked for faithfulness, since it makes no claims.
+  These lines are marked `auto` in `judgments.jsonl`.
+- **A failed judge call scores nothing.** It's recorded with its error type,
+  left out of the metric, and counted in a warning on the report. An
+  unreadable verdict counts as a failed call.
 - **How far the judge can be trusted** is measured in section 7.
 
 ## 7. Trustworthy comparisons
@@ -437,7 +461,8 @@ This is what sets Litmus apart: it says whether a change is real or noise.
   interval).
 - A **regression** needs both conditions: the interval for the change is
   entirely below zero, *and* the drop is at least a minimum size (default 2
-  percentage points).
+  percentage points for rates and scores; 10% of the baseline for latency,
+  cost and tokens).
 - **The judge is measured, not corrected.** Litmus compares it with hand
   labels, reports agreement and Cohen's kappa, and warns when they're low.
 
@@ -455,25 +480,32 @@ of the same question aren't independent.
 ### Numbers for a single run
 
 - **Every metric gets a 95% interval,** e.g. "correctness 81% (74–87%),
-  70 questions × 3 repeats".
-- **Flip rate:** the share of questions whose pass/fail changed between
-  repeats. A high flip rate means the app is flaky, whatever its average.
+  70 questions × 3 repeats", from 10,000 resamples of the questions, seeded
+  with the run's seed so a report can be reproduced exactly. Rates over calls
+  (errors, cost, tokens) and latency percentiles resample questions too, taking
+  all of each drawn question's calls.
+- **Flip rate:** the share of questions with two or more scored repeats whose
+  score changed between repeats. A high flip rate means the app is flaky,
+  whatever its average. It's shown for every metric scored per repeat.
 
 ### Comparing two runs
 
 **Runs must be comparable.** Litmus refuses to compare runs that used a
-different dataset, judge model or judge prompt. `run.yaml` stores a hash of
-`dataset.jsonl` and of each judge prompt, so an edited dataset counts as
-different even if nobody bumped its version. A `--force` option overrides this, with a warning. A different
-`kb_version` gives a warning only.
+different dataset, or a judge metric graded with a different provider, model
+or prompt. `run.yaml` stores a hash of `dataset.jsonl` and `judging.yaml` a
+hash of each judge prompt, so an edited dataset counts as different even if
+nobody bumped its version. A `--force` option overrides this, with a warning.
+A different `kb_version` gives a warning only. If only one run was judged,
+judge metrics aren't compared.
 
 **How the comparison works:**
 1. For each question scored in both runs, take the difference: candidate score
    minus baseline score.
 2. Resample the questions with replacement 10,000 times, and take the mean
-   difference each time.
+   difference each time. Each resample draws the same questions from both
+   runs. Call metrics are recomputed on the drawn questions' calls in each run.
 3. The 95% interval runs from the 2.5th to the 97.5th percentile of those
-   means. The random seed is saved in `run.yaml`, so the result can be
+   means. Both runs' seeds from `run.yaml` seed it, so the result can be
    reproduced exactly.
 
 Pairing compares each question with itself. Because some questions are just
@@ -488,15 +520,17 @@ better: unsafe and missed answer rates, errors, latency, cost):
 | Regression | Interval entirely below zero, and drop ≥ minimum size | Yes, if the metric is a gate |
 | Small but real drop | Interval entirely below zero, but drop < minimum size | No, shown as a note |
 | No detectable change | Interval includes zero | No |
+| Small but real gain | Interval entirely above zero, but gain < minimum size | No |
 | Improvement | Interval entirely above zero, and gain ≥ minimum size | No |
 
-**Smallest detectable change:** the report also gives the interval's
+**Smallest detectable change:** the comparison also gives the interval's
 half-width, e.g. "with this dataset, changes smaller than about ±5 points can't
 be told apart from noise". That tells users when they need more questions.
 
 ### Gates for CI
 
-The run config lists which metrics gate CI:
+A gates file, passed with `--gates`, lists which metrics gate CI. A
+recommended starting set:
 
 ```yaml
 gates:
@@ -506,9 +540,14 @@ gates:
   errors:             {max: 0.05}          # absolute cap, no comparison needed
 ```
 
-CI fails if any gate metric shows a regression, or breaks an absolute cap.
-Defaults: `correctness`, `behavior_accuracy`, `unsafe_answer_rate`, and
-`errors` capped at 5%.
+- A gate with `min_effect`, or with nothing (`{}`, the default minimum
+  change), fails on a **regression**. Its `min_effect` also sets that
+  metric's verdict in the table.
+- `max` and `min` are **absolute caps** on the candidate's value. A gate with
+  only caps doesn't compare the runs.
+- **A gate whose metric wasn't measured fails,** e.g. `correctness` when a run
+  wasn't judged, so a misconfigured run can't pass CI by accident.
+- Without `--gates`, compare shows the verdicts and always exits 0.
 
 **Only overall numbers gate.** Breakdowns by `source` and `tags` are shown but
 never fail CI. With many breakdowns, some would show a "significant" drop by
@@ -516,15 +555,24 @@ chance alone.
 
 ### How far the judge can be trusted
 
-- **Hand-label a sample** for each judge metric: aim for 50+ questions, covering
-  all five behaviors. Litmus compares the judge's verdicts with your labels.
+- **Hand-label a sample** for each judge metric: aim for 50+ replies; for the
+  behavior judge, cover all five behaviors. `litmus label` picks the sample
+  from the replies the judge grades (not the ones decided without a call),
+  one repeat of every question before a second, using the run's seed. Label
+  before looking at the judge's verdicts.
+- **Labels belong to a run's replies, not to a judge.** Re-judging a run with a
+  new model or prompt reuses its labels, which is how a new judge prompt gets
+  checked.
 - **Report agreement and Cohen's kappa.** Kappa corrects for agreement by
   chance. If 90% of answers pass, a judge that always says "pass" agrees 90% of
-  the time but has a kappa of 0.
+  the time but has a kappa of 0. For pass/fail metrics the report also counts
+  where the judge was too lenient (passed what you failed) and too strict.
 - **Warn when kappa is below 0.6.**
 - **Every judge metric in a report shows its judge's agreement,** and which
-  dataset version it was checked on. Changing the judge model or prompt
-  triggers a warning that the judge hasn't been validated yet.
+  runs and dataset version it was checked on. The check pools the labels from
+  every run of the dataset that was judged with the same provider, model and
+  prompt hash, so a second run gets the first run's check. Changing the judge
+  model or prompt triggers a warning that the judge hasn't been validated yet.
 - **Later version:** use the measured judge error rates to correct pass rates
   and widen their intervals.
 

@@ -86,3 +86,38 @@ next labeler decides the same way.
 - **Don't change a label after seeing the agent's results,** unless the label
   was actually wrong. If you change one, write why in `notes`. Otherwise you
   end up tuning the test to the agent.
+
+## Labeling replies to check the judge
+
+This is a second kind of labeling. The sections above label the dataset's
+questions; this one grades the app's actual replies, so Litmus can measure how
+often the judge agrees with you (design doc, section 7).
+
+1. Run `litmus label <run> --metric correctness`. It writes
+   `labels-correctness.csv` in the run folder with up to 50 replies.
+2. Open it in a spreadsheet app. For each row, read the question, the reference
+   answer and the app's answer, and write `pass` or `fail` in `label`. Use
+   `note` for doubts. Leave a row blank to skip it.
+3. Save it as CSV, in the same place.
+4. Judge the run if you haven't yet. `litmus report` shows the agreement.
+
+Grade by the judge's rules, not by taste:
+
+- **Correctness `pass`:** the answer gives the facts the question asks about,
+  agrees with the reference and contradicts nothing in it. Wording, length,
+  language, politeness and extra details don't matter, unless an extra detail
+  contradicts the reference.
+- **Correctness `fail`:** a fact the question asks about is missing or wrong,
+  the answer contradicts the reference, or it doesn't address the question.
+- **Faithfulness:** `pass` only if every factual claim in the answer is
+  supported by the passages in the sheet. Don't use what you know yourself.
+- **Behavior:** pick one of the five behaviors, using the definitions above.
+
+Habits:
+
+- **Label before you look at the judge's verdicts** (`judgments.jsonl` or the
+  report's "Incorrect answers"). Otherwise you grade the judge, not the answer.
+- **Don't change reference answers to make the judge look better.** If one is
+  actually wrong, fix it, bump the dataset version, and label a new run.
+- **A cell starting with `'`** was protected from being read as a formula. The
+  `'` isn't part of the answer.

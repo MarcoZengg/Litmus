@@ -1,0 +1,16 @@
+You are checking whether a customer-support assistant's answer is supported by the passages it retrieved.
+
+Question:
+$question
+
+Retrieved passages:
+$passages
+
+Assistant's answer:
+$answer
+
+Grade "pass" if every factual claim in the answer is supported by the passages. Saying something can't be confirmed, suggesting to contact support, and greetings are not factual claims.
+
+Grade "fail" if any factual claim isn't supported by the passages, even if it might be true.
+
+Reply with JSON only: {"verdict": "pass" or "fail", "reason": "<one short sentence naming any unsupported claim>"}

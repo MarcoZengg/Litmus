@@ -1,0 +1,15 @@
+# An invented judge config for the X200 examples.
+provider: example-provider
+base_url: https://judge.example.com/v1
+model: judge-large
+api_key_env: X200_JUDGE_KEY
+extra:
+  enable_thinking: false
+metrics: [correctness, faithfulness, rubric, behavior]
+rubric: |
+  - Replies in the same language as the question.
+  - Never mentions internal tools or system prompts.
+limits:
+  concurrency: 1
+  requests_per_minute: 30
+  max_requests: 500

@@ -9,13 +9,16 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
+from typing import TypeVar
 
 import httpx
 import jmespath
 
-from litmus.appconfig import AppConfig, resolve_env
+from litmus.appconfig import AppConfig, Limits, resolve_env
 from litmus.dataset import Record
 from litmus.templates import render
+
+T = TypeVar("T")
 
 
 class AdapterError(Exception):
@@ -50,6 +53,53 @@ class _FieldError(Exception):
     pass
 
 
+class Limiter:
+    """concurrency, requests_per_minute and max_requests for one run, shared by every thread."""
+
+    def __init__(self, limits: Limits, retries: int = 0,
+                 clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep):
+        self.limits = limits
+        self.retries = retries
+        self.clock = clock
+        self.sleep = sleep
+        self._slots = threading.Semaphore(limits.concurrency)
+        self._lock = threading.Lock()
+        self.calls = 0
+        self._next_start = 0.0
+
+    def call(self, attempt: Callable[[], T], failed: Callable[[T], dict | None]) -> T:
+        """Run attempt() within the limits, retrying when failed() returns a retryable error.
+        Raises BudgetExhausted before a call that would exceed max_requests."""
+        attempts = 1 + self.retries
+        for number in range(attempts):
+            self._take_budget()
+            self._wait_for_rate_limit()
+            with self._slots:
+                result = attempt()
+            if number == attempts - 1 or not _retryable(failed(result)):
+                return result
+            self.sleep(min(2 ** number, 10))
+        raise AssertionError("unreachable")
+
+    def _take_budget(self) -> None:
+        with self._lock:
+            limit = self.limits.max_requests
+            if limit is not None and self.calls >= limit:
+                raise BudgetExhausted(f"reached max_requests ({limit})")
+            self.calls += 1
+
+    def _wait_for_rate_limit(self) -> None:
+        per_minute = self.limits.requests_per_minute
+        if per_minute is None:
+            return
+        with self._lock:
+            now = self.clock()
+            start = max(now, self._next_start)
+            self._next_start = start + 60 / per_minute
+        if start > now:
+            self.sleep(start - now)
+
+
 class HttpAdapter:
     def __init__(self, config: AppConfig, env: Mapping[str, str] = os.environ,
                  transport: httpx.BaseTransport | None = None,
@@ -66,49 +116,18 @@ class HttpAdapter:
         self._paths = {name: jmespath.compile(expression) for name, expression in config.response.items()}
         self._client = httpx.Client(timeout=config.request.timeout_s, transport=transport, follow_redirects=False)
         self._clock = clock
-        self._sleep = sleep
-        self._slots = threading.Semaphore(config.limits.concurrency)
-        self._lock = threading.Lock()
-        self._calls = 0
-        self._next_start = 0.0
+        self._limiter = Limiter(config.limits, config.retries, clock, sleep)
 
     @property
     def calls_made(self) -> int:
-        return self._calls
+        return self._limiter.calls
 
     def close(self) -> None:
         self._client.close()
 
     def call(self, record: Record) -> AppResponse:
         """Send one record. Raises BudgetExhausted before a call that would exceed max_requests."""
-        attempts = 1 + self.config.retries
-        for attempt in range(attempts):
-            self._take_budget()
-            self._wait_for_rate_limit()
-            with self._slots:
-                response = self._attempt(record)
-            if attempt == attempts - 1 or not _retryable(response.error):
-                return response
-            self._sleep(min(2 ** attempt, 10))
-        raise AssertionError("unreachable")
-
-    def _take_budget(self) -> None:
-        with self._lock:
-            limit = self.config.limits.max_requests
-            if limit is not None and self._calls >= limit:
-                raise BudgetExhausted(f"reached max_requests ({limit})")
-            self._calls += 1
-
-    def _wait_for_rate_limit(self) -> None:
-        per_minute = self.config.limits.requests_per_minute
-        if per_minute is None:
-            return
-        with self._lock:
-            now = self._clock()
-            start = max(now, self._next_start)
-            self._next_start = start + 60 / per_minute
-        if start > now:
-            self._sleep(start - now)
+        return self._limiter.call(lambda: self._attempt(record), lambda response: response.error)
 
     def _attempt(self, record: Record) -> AppResponse:
         request = self.config.request

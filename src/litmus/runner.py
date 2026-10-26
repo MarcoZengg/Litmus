@@ -28,6 +28,21 @@ RUN_FILE = "run.yaml"
 RECORDS_FILE = "records.jsonl"
 
 
+def is_glass_box(run: dict) -> bool:
+    """Whether the run's app config reads retrieved passages from the reply (docs/design.md, section 4)."""
+    response = (run.get("app") or {}).get("config", {}).get("response") or {}
+    return "retrieved_context_ids" in response
+
+
+def load_run(folder: Path) -> dict:
+    return yaml.safe_load((folder / RUN_FILE).read_text(encoding="utf-8"))
+
+
+def load_rows(folder: Path) -> list[dict]:
+    return [json.loads(line) for line in (folder / RECORDS_FILE).read_text(encoding="utf-8").splitlines()
+            if line.strip()]
+
+
 def run_folder(dataset: Dataset, name: str, today: datetime | None = None) -> Path:
     date = (today or datetime.now()).strftime("%Y-%m-%d")
     return dataset.folder / "runs" / f"{date}_{name}"

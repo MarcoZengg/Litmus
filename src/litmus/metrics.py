@@ -2,8 +2,9 @@
 
 Each metric scores every repeat of a question, averages the repeats into one
 score per question, then averages the questions, so every question counts
-equally however many repeats finished. Ranges (intervals) come with the
-statistics in section 7.
+equally however many repeats finished. Each metric's measurements are also
+kept by question (Values), so stats.py can resample questions for ranges and
+comparisons (section 7).
 """
 
 from collections import Counter, defaultdict
@@ -30,6 +31,35 @@ class Metric:
     total: int  # questions (or calls) the metric applies to
     unit: str = "questions"
     lower_is_better: bool = False
+    low: float | None = None  # 95% range (section 7)
+    high: float | None = None
+    flipped: int | None = None  # questions whose score changed between repeats
+    repeated: int | None = None  # questions with two or more scored repeats
+
+
+@dataclass
+class Values:
+    """One metric's measurements by question, so it can be recomputed on resampled questions.
+
+    kind "mean": each question's scores, one per repeat; the metric is the mean of the question means.
+    kind "ratio": each question's calls' values; the metric is their pooled mean, times scale.
+    kind "percentile": each question's calls' values; the metric is the q-th percentile of all of them.
+    """
+    kind: str
+    per_question: dict[str, list[float]]
+    q: float = 50.0
+    scale: float = 1.0
+
+    def value(self) -> float | None:
+        lists = list(self.per_question.values())
+        if not lists:
+            return None
+        if self.kind == "mean":
+            return sum(sum(v) / len(v) for v in lists) / len(lists)
+        flat = [x for v in lists for x in v]
+        if self.kind == "ratio":
+            return sum(flat) / len(flat) * self.scale
+        return float(np.percentile(flat, self.q))
 
 
 def behavior_match(record: Record, row: Row) -> float | None:
@@ -104,14 +134,20 @@ QUESTION_METRICS: dict[str, tuple[Scorer, bool]] = {  # name -> (scorer, lower i
 }
 
 
-def question_scores(records: list[Record], rows_by_id: dict[str, list[Row]], scorer: Scorer) -> dict[str, float]:
-    """One score per question: the mean of its repeats that could be scored."""
-    scores = {}
+def question_values(records: list[Record], rows_by_id: dict[str, list[Row]],
+                    scorer: Scorer) -> dict[str, list[float]]:
+    """Each question's scores, one per repeat that could be scored; questions with none are left out."""
+    found = {}
     for record in records:
         values = [v for v in (scorer(record, row) for row in rows_by_id.get(record.id, [])) if v is not None]
         if values:
-            scores[record.id] = sum(values) / len(values)
-    return scores
+            found[record.id] = values
+    return found
+
+
+def question_scores(records: list[Record], rows_by_id: dict[str, list[Row]], scorer: Scorer) -> dict[str, float]:
+    """One score per question: the mean of its repeats that could be scored."""
+    return {qid: sum(values) / len(values) for qid, values in question_values(records, rows_by_id, scorer).items()}
 
 
 def applies(name: str, record: Record) -> bool:
@@ -127,44 +163,55 @@ def applies(name: str, record: Record) -> bool:
 RETRIEVAL_METRICS = {f"recall@{k}" for k in RECALL_AT} | {"mrr"}
 
 
-def question_metrics(records: list[Record], rows_by_id: dict[str, list[Row]],
-                     glass_box: bool = True) -> list[Metric]:
+def question_metric_values(records: list[Record], rows_by_id: dict[str, list[Row]],
+                           glass_box: bool = True) -> dict[str, Values]:
     """glass_box=False: the app returns no retrieved passages, so retrieval isn't measured at all,
     not even as 0 for failed calls."""
+    return {name: Values("mean", question_values(records, rows_by_id, scorer))
+            for name, (scorer, _) in QUESTION_METRICS.items() if glass_box or name not in RETRIEVAL_METRICS}
+
+
+def question_metrics(records: list[Record], rows_by_id: dict[str, list[Row]],
+                     glass_box: bool = True) -> list[Metric]:
+    values = question_metric_values(records, rows_by_id, glass_box)
     metrics = []
-    for name, (scorer, lower) in QUESTION_METRICS.items():
-        if name in RETRIEVAL_METRICS and not glass_box:
+    for name, (_, lower) in QUESTION_METRICS.items():
+        if name not in values:
             metrics.append(Metric(name, None, 0, 0, lower_is_better=lower))
             continue
-        scores = question_scores(records, rows_by_id, scorer)
         total = sum(applies(name, record) for record in records)
-        value = sum(scores.values()) / len(scores) if scores else None
-        metrics.append(Metric(name, value, len(scores), total, lower_is_better=lower))
+        metrics.append(Metric(name, values[name].value(), len(values[name].per_question), total,
+                              lower_is_better=lower))
     return metrics
 
 
+LOWER_IS_BETTER_CALLS = {"errors", "latency_p50_ms", "latency_p95_ms", "cost_per_1000"}
+
+
+def call_metric_values(rows: list[Row]) -> dict[str, Values]:
+    def by_question(value_of: Callable[[Row], float | None]) -> dict[str, list[float]]:
+        found = defaultdict(list)
+        for row in rows:
+            value = value_of(row)
+            if value is not None:
+                found[row["id"]].append(float(value))
+        return dict(found)
+
+    latencies = by_question(lambda row: row["latency_ms"] if row["error"] is None else None)
+    return {
+        "errors": Values("ratio", by_question(lambda row: row["error"] is not None)),
+        "latency_p50_ms": Values("percentile", latencies, q=50),
+        "latency_p95_ms": Values("percentile", latencies, q=95),
+        "cost_per_1000": Values("ratio", by_question(lambda row: row["cost"]), scale=1000),
+        "input_tokens_per_call": Values("ratio", by_question(lambda row: row["input_tokens"])),
+        "output_tokens_per_call": Values("ratio", by_question(lambda row: row["output_tokens"])),
+    }
+
+
 def call_metrics(rows: list[Row]) -> list[Metric]:
-    errors = sum(row["error"] is not None for row in rows)
-    latencies = [row["latency_ms"] for row in rows if row["error"] is None and row["latency_ms"] is not None]
-    costs = [row["cost"] for row in rows if row["cost"] is not None]
-    input_tokens = [row["input_tokens"] for row in rows if row["input_tokens"] is not None]
-    output_tokens = [row["output_tokens"] for row in rows if row["output_tokens"] is not None]
-
-    def percentile(q: float) -> float | None:
-        return float(np.percentile(latencies, q)) if latencies else None
-
-    def mean(values: list) -> float | None:
-        return sum(values) / len(values) if values else None
-
-    return [
-        Metric("errors", errors / len(rows) if rows else None, len(rows), len(rows), "calls", lower_is_better=True),
-        Metric("latency_p50_ms", percentile(50), len(latencies), len(rows), "calls", lower_is_better=True),
-        Metric("latency_p95_ms", percentile(95), len(latencies), len(rows), "calls", lower_is_better=True),
-        Metric("cost_per_1000", mean(costs) * 1000 if costs else None, len(costs), len(rows), "calls",
-               lower_is_better=True),
-        Metric("input_tokens_per_call", mean(input_tokens), len(input_tokens), len(rows), "calls"),
-        Metric("output_tokens_per_call", mean(output_tokens), len(output_tokens), len(rows), "calls"),
-    ]
+    return [Metric(name, values.value(), sum(map(len, values.per_question.values())), len(rows), "calls",
+                   lower_is_better=name in LOWER_IS_BETTER_CALLS)
+            for name, values in call_metric_values(rows).items()]
 
 
 def behavior_matrix(records: list[Record], rows_by_id: dict[str, list[Row]]) -> dict[str, dict[str, int]]:

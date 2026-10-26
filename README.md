@@ -6,8 +6,9 @@ Litmus runs each test question several times, compares two runs question by
 question, and reports every score with a range. A change counts as real only
 when the evidence supports it.
 
-**Status:** early development. `litmus validate`, `run` and `report` work;
-`compare`, judge metrics and ranges are coming.
+**Status:** early development. Every command works: `validate`, `run`,
+`judge`, `label` (checking the judge against hand labels), `report` (with 95%
+ranges and flip rates) and `compare` (paired verdicts and CI gates).
 
 ## Docs
 
@@ -20,9 +21,11 @@ when the evidence supports it.
 
 ```text
 litmus validate <dataset> [--app app.yaml]
-litmus run <dataset> --app app.yaml --name baseline
+litmus run <dataset> --app app.yaml --name baseline [--judge judge.yaml]
+litmus judge <run> --judge judge.yaml
+litmus label <run> --metric correctness
 litmus report <run>
-litmus compare <baseline-run> <candidate-run>
+litmus compare <baseline-run> <candidate-run> [--gates gates.yaml]
 ```
 
 ## Development

@@ -139,8 +139,9 @@ def test_report_command(x200):
     result = runner.invoke(app, ["report", str(folder)])
     assert result.exit_code == 0, result.output
     assert "behavior_accuracy" in result.output and "22.2%" in result.output
-    assert "unsafe_answer_rate          100.0%   1 of 2 questions  (lower is better)" in result.output
-    assert "latency_p95_ms              480 ms   5 of 6 calls" in result.output
+    assert "unsafe_answer_rate          100.0%     100.0-100.0%           1 of 2 questions  (lower is better)" in result.output
+    assert "latency_p95_ms              480 ms       300-500 ms           5 of 6 calls" in result.output
+    assert "behavior_accuracy            22.2%        0.0-66.7%  100.0%   3 of 4 questions" in result.output
     assert "Missed answers:  q-0001 (1/3)" in result.output
     assert "By source" in result.output and "By tag" in result.output
 
