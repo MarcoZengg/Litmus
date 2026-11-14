@@ -184,6 +184,15 @@ def test_load_passages_from_a_run(tmp_path):
     assert saved.by_id["q-3"] == Passages([], [])
 
 
+def test_a_repeat_with_passages_beats_one_that_retrieved_none(tmp_path):
+    rows = [{"id": "q-1", "repeat": 1, "retrieved_context_ids": [], "retrieval_context": [], "error": None},
+            {"id": "q-1", "repeat": 3, "retrieved_context_ids": ["p9"], "retrieval_context": ["Old"], "error": None},
+            {"id": "q-1", "repeat": 2, "retrieved_context_ids": ["p12"], "retrieval_context": ["Battery: 6 h"],
+             "error": None}]
+    saved = load_passages(source_run(tmp_path / "runs" / "r", rows))
+    assert saved.by_id["q-1"] == Passages(["Battery: 6 h"], ["p12"])  # the app routed repeat 1 away
+
+
 def test_load_passages_from_a_jsonl_file(tmp_path):
     path = tmp_path / "frozen.jsonl"
     path.write_text(json.dumps({"id": "q-1", "retrieval_context": ["A", "B"], "retrieved_context_ids": ["a"]}) + "\n",

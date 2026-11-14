@@ -34,8 +34,10 @@ class SavedPassages:
 
 
 def load_passages(path: Path) -> SavedPassages:
-    """Each question's passages. Replies without passage texts, and failed calls, are skipped;
-    when a question has several repeats, the lowest repeat wins."""
+    """Each question's passages. Failed calls, and replies without a retrieval_context list, are skipped.
+    Of a question's repeats, the lowest one that retrieved passages wins, so a repeat that retrieved none
+    (say the app routed the question away that time) never hides one that did. A question whose replies
+    all retrieved none gets empty passages."""
     from litmus.runner import RECORDS_FILE, RUN_FILE, load_run  # the runner imports the adapters
 
     source, sha256 = path.name, None
@@ -53,7 +55,7 @@ def load_passages(path: Path) -> SavedPassages:
     except (OSError, UnicodeDecodeError):
         raise PassagesError(f"passages_from: can't read {path.name} as UTF-8 text") from None
 
-    best: dict[str, tuple[int, Passages]] = {}
+    best: dict[str, tuple[tuple[bool, int], Passages]] = {}
     for number, line in enumerate(lines, 1):
         if not line.strip():
             continue
@@ -69,8 +71,9 @@ def load_passages(path: Path) -> SavedPassages:
         ids = row.get("retrieved_context_ids")
         ids = [str(i) for i in ids] if isinstance(ids, list) and len(ids) == len(texts) else None
         repeat = row["repeat"] if isinstance(row.get("repeat"), int) else 1
-        if row["id"] not in best or repeat < best[row["id"]][0]:
-            best[row["id"]] = (repeat, Passages(texts, ids))
+        rank = (not texts, repeat)  # repeats with passages first, then the lowest repeat
+        if row["id"] not in best or rank < best[row["id"]][0]:
+            best[row["id"]] = (rank, Passages(texts, ids))
     return SavedPassages({key: passages for key, (_, passages) in best.items()}, source, sha256)
 
 
