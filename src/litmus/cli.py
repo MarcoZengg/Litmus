@@ -16,6 +16,7 @@ from litmus.dataset import BEHAVIORS, SOURCES, Dataset, Issue, load_dataset
 from litmus.judge import (JUDGE_METRICS, JUDGMENTS_FILE, JudgeClient, JudgeConfig, JudgeError, check_judge,
                           judge_run, load_judge_config, plan_judgments)
 from litmus.labels import SUGGESTED_LABELS, label_values, labels_file, pick_replies, write_sheet
+from litmus.passages import check_passages
 from litmus.report import ReportError, build_report, format_report, save_metrics
 from litmus.runner import RECORDS_FILE, RUN_FILE, RUN_NAME, execute_run, is_glass_box, load_rows, load_run, run_folder
 from litmus.templates import check_request_templates
@@ -71,12 +72,21 @@ def check_app(dataset: Dataset, path: Path, secrets_required: bool
     config, errors = load_app_config(path)
     if config is None:
         return None, [], errors, []
-    target = urlsplit(config.request.url).hostname if config.request else config.adapter
+    if config.request:
+        target = urlsplit(config.request.url).hostname
+    elif config.openai:
+        target = f"{config.openai.model} at {urlsplit(config.openai.base_url).hostname}"
+    else:
+        target = config.adapter
     lines = [f"App        {config.name} ({config.adapter}, {target})"]
     errors += check_request_templates(config, dataset.records)
     if dataset.manifest is not None:
         errors += check_allowed(dataset.manifest, config, os.environ)
     _, warnings = redacted_config(config)
+    passage_lines, passage_errors, passage_warnings = check_passages(config, dataset)
+    lines += passage_lines
+    errors += passage_errors
+    warnings += passage_warnings
     # Secrets may only be set where runs happen, so validate just warns.
     (errors if secrets_required else warnings).extend(check_env(config, os.environ))
     return config, lines, errors, warnings

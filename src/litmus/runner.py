@@ -19,7 +19,7 @@ from pathlib import Path
 import yaml
 
 from litmus import __version__
-from litmus.adapters import AppResponse, BudgetExhausted, HttpAdapter
+from litmus.adapters import Adapter, AppResponse, BudgetExhausted
 from litmus.appconfig import AppConfig
 from litmus.dataset import Dataset, Issue
 
@@ -29,9 +29,10 @@ RECORDS_FILE = "records.jsonl"
 
 
 def is_glass_box(run: dict) -> bool:
-    """Whether the run's app config reads retrieved passages from the reply (docs/design.md, section 4)."""
-    response = (run.get("app") or {}).get("config", {}).get("response") or {}
-    return "retrieved_context_ids" in response
+    """Whether the run knows each reply's passages: the app config reads them from the reply, or the
+    openai adapter replayed saved ones (docs/design.md, section 4)."""
+    config = (run.get("app") or {}).get("config") or {}
+    return "retrieved_context_ids" in (config.get("response") or {}) or bool(config.get("passages_from"))
 
 
 def load_run(folder: Path) -> dict:
@@ -63,7 +64,7 @@ class RunResult:
         return self.stop_reason is None and self.written == self.planned
 
 
-def execute_run(dataset: Dataset, config: AppConfig, saved_config: dict, adapter: HttpAdapter, folder: Path,
+def execute_run(dataset: Dataset, config: AppConfig, saved_config: dict, adapter: Adapter, folder: Path,
                 name: str, repeats: int,
                 progress: Callable[[int, int, int], None] | None = None) -> RunResult:
     """Call the app for every record and repeat; repeat 1 for all records first, so a run

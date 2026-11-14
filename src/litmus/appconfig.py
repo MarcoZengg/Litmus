@@ -21,11 +21,14 @@ ADAPTERS = ("http", "openai", "python")
 METHODS = ("GET", "POST", "PUT", "PATCH")
 RESPONSE_FIELDS = ("actual_output", "retrieved_context_ids", "retrieval_context", "status", "cached",
                    "input_tokens", "output_tokens", "cost", "kb_version")
-TOP_LEVEL_FIELDS = {"name", "adapter", "request", "response", "behavior_map", "limits", "retries",
-                    # Used by the OpenAI-compatible and Python adapters, which come later.
-                    "provider", "base_url", "model", "api_key_env", "system_prompt", "temperature", "function"}
+OPENAI_FIELDS = {"base_url", "model", "api_key_env", "system_prompt", "user_template", "passages_from",
+                 "temperature", "timeout_s", "extra", "json_mode"}
+TOP_LEVEL_FIELDS = {"name", "adapter", "provider", "request", "response", "behavior_map", "limits", "retries",
+                    *OPENAI_FIELDS,
+                    "function"}  # for the Python adapter, which comes later
 REQUEST_FIELDS = {"method", "url", "headers", "body", "timeout_s"}
 LIMIT_FIELDS = {"concurrency", "requests_per_minute", "max_requests"}
+ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 ENV_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 SENSITIVE_NAME = re.compile(r"auth|token|key|secret|cookie|password|signature", re.IGNORECASE)
 REDACTED = "<redacted>"
@@ -48,6 +51,21 @@ class Limits:
 
 
 @dataclass
+class OpenAISettings:
+    """The openai adapter's settings: the model is the app (docs/design.md, section 4)."""
+    base_url: str
+    model: str
+    api_key_env: str | None = None  # the key's environment variable; local servers often need none
+    system_prompt: str | None = None
+    user_template: str = "{{input}}"
+    passages_from: Path | None = None  # a run folder or JSONL file, resolved against the config's folder
+    temperature: float | None = 0.0  # None: leave it to the API
+    timeout_s: float = 60.0
+    extra: dict = field(default_factory=dict)  # added to every request body
+    json_mode: bool = False
+
+
+@dataclass
 class AppConfig:
     path: Path
     name: str
@@ -59,6 +77,7 @@ class AppConfig:
     limits: Limits = field(default_factory=Limits)
     retries: int = 0
     provider: str | None = None
+    openai: OpenAISettings | None = None
 
 
 def load_app_config(path: Path) -> tuple[AppConfig | None, list[Issue]]:
@@ -81,7 +100,14 @@ def load_app_config(path: Path) -> tuple[AppConfig | None, list[Issue]]:
         problems.append("'provider' must be text")
 
     request = _request(data.get("request"), problems) if adapter == "http" else None
-    response = _response(data.get("response"), problems, required=adapter == "http")
+    if adapter != "http" and "request" in data:
+        problems.append("'request' is only for the http adapter")
+    openai = _openai(data, path, problems) if adapter == "openai" else None
+    if adapter in ADAPTERS and adapter != "openai":
+        problems += [f"'{key}' is only for the openai adapter" for key in sorted(OPENAI_FIELDS & set(map(str, data)))]
+    # The openai adapter reads fields from the model's reply only when it's asked to (a JSON reply).
+    response = _response(data.get("response"), problems,
+                         required=adapter == "http" or (adapter == "openai" and data.get("response") is not None))
     behavior_map = _behavior_map(data.get("behavior_map", {}), problems)
     limits = _limits(data.get("limits", {}), problems)
     retries = data.get("retries", 0)
@@ -92,7 +118,7 @@ def load_app_config(path: Path) -> tuple[AppConfig | None, list[Issue]]:
         return None, [Issue(where, problem) for problem in problems]
     return AppConfig(path=path, name=name, adapter=adapter, raw=data, request=request, response=response,
                      behavior_map=behavior_map, limits=limits, retries=retries,
-                     provider=data.get("provider")), []
+                     provider=data.get("provider"), openai=openai), []
 
 
 def _request(value: object, problems: list[str]) -> HttpRequest | None:
@@ -116,6 +142,49 @@ def _request(value: object, problems: list[str]) -> HttpRequest | None:
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
         problems.append("'request.timeout_s' must be a positive number of seconds")
     return HttpRequest(url=url, method=method, headers=headers, body=body, timeout_s=timeout)
+
+
+def _openai(data: dict, path: Path, problems: list[str]) -> OpenAISettings | None:
+    before = len(problems)
+    if not isinstance(data.get("provider"), str) or not data["provider"].strip():
+        problems.append("'provider' is required for the openai adapter, e.g. 'provider: openai', "
+                        "so the dataset's allowed_providers can be checked")
+    base_url = data.get("base_url")
+    if not isinstance(base_url, str) or not base_url.startswith(("http://", "https://")):
+        problems.append("'base_url' must start with http:// or https://, e.g. https://api.openai.com/v1")
+    model = data.get("model")
+    if not isinstance(model, str) or not model.strip():
+        problems.append("'model' is required: the model name the API expects")
+    api_key_env = data.get("api_key_env")
+    if api_key_env is not None and not (isinstance(api_key_env, str) and ENV_NAME.fullmatch(api_key_env)):
+        problems.append("'api_key_env' must be the name of an environment variable")
+    for key in ("system_prompt", "user_template"):
+        if key in data and not (isinstance(data[key], str) and data[key].strip()):
+            problems.append(f"'{key}' must be text")
+    temperature = data.get("temperature", 0)
+    if temperature is not None and (isinstance(temperature, bool) or not isinstance(temperature, (int, float))
+                                    or temperature < 0):
+        problems.append("'temperature' must be a number, 0 or more, or null to leave it to the API")
+    timeout = data.get("timeout_s", 60)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+        problems.append("'timeout_s' must be a positive number of seconds")
+    extra = data.get("extra", {})
+    if not isinstance(extra, dict):
+        problems.append("'extra' must be a list of settings to add to every request, e.g. 'max_tokens: 500'")
+    elif {"model", "messages"} & set(map(str, extra)):
+        problems.append("'extra' can't set model or messages")
+    if not isinstance(data.get("json_mode", False), bool):
+        problems.append("'json_mode' must be true or false")
+    passages_from = data.get("passages_from")
+    if passages_from is not None and not (isinstance(passages_from, str) and passages_from.strip()):
+        problems.append("'passages_from' must be a path: a run folder, or a JSONL file of passages")
+    if len(problems) > before:
+        return None
+    return OpenAISettings(base_url=base_url, model=model, api_key_env=api_key_env,
+                          system_prompt=data.get("system_prompt"), user_template=data.get("user_template", "{{input}}"),
+                          passages_from=path.parent / passages_from if passages_from else None,
+                          temperature=temperature, timeout_s=timeout, extra=extra,
+                          json_mode=data.get("json_mode", False))
 
 
 def _response(value: object, problems: list[str], required: bool) -> dict[str, str]:
@@ -218,8 +287,11 @@ def redacted_config(config: AppConfig) -> tuple[dict, list[Issue]]:
 
 
 def check_env(config: AppConfig, env: Mapping[str, str]) -> list[Issue]:
-    """Environment variables the config refers to but that aren't set."""
-    _, missing = resolve_env(config.raw, env)
+    """Environment variables the config refers to but that aren't set: ${NAME} in the http adapter's
+    request, and the openai adapter's api_key_env."""
+    _, missing = resolve_env(config.raw.get("request"), env)
+    if config.openai is not None and config.openai.api_key_env and not env.get(config.openai.api_key_env):
+        missing = sorted(set(missing) | {config.openai.api_key_env})
     return [Issue(config.path.name, f"environment variable {name} is not set") for name in missing]
 
 

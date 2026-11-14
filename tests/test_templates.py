@@ -3,7 +3,8 @@ import pytest
 from conftest import X200
 from litmus.appconfig import load_app_config
 from litmus.dataset import Record, load_dataset
-from litmus.templates import Placeholder, check_request_templates, find_placeholders, parse_placeholder, render
+from litmus.templates import (Placeholder, check_request_templates, find_placeholders, format_passages,
+                              parse_placeholder, render)
 
 
 def config_from(tmp_path, text):
@@ -20,6 +21,8 @@ def config_from(tmp_path, text):
     ("metadata.category", Placeholder("metadata", "category")),
     ("metadata.category?", Placeholder("metadata", "category", optional=True)),
     ("metadata.user_id", Placeholder("metadata", "user_id")),
+    ("passages", Placeholder("passages")),
+    ("passages?", None),
     ("question", None),
     ("input?", None),
     ("metadata.", None),
@@ -39,7 +42,7 @@ def test_find_placeholders_in_nested_templates():
 def test_malformed_placeholders_are_reported():
     _, issues = find_placeholders({"body": {"a": "{{question}}", "b": "{{input}", "c": "{{input}} }}"}})
     assert [str(i) for i in issues] == [
-        "body.a: unknown placeholder {{question}}; use {{input}} or {{metadata.<key>}}",
+        "body.a: unknown placeholder {{question}}; use {{input}}, {{metadata.<key>}} or {{passages}}",
         "body.b: unbalanced {{ or }}",
         "body.c: unbalanced {{ or }}",
     ]
@@ -90,3 +93,45 @@ def test_render_refuses_missing_required_keys():
 
 def test_render_never_expands_environment_variables_in_questions():
     assert render({"message": "{{input}}"}, Record(id="a", input="${HOME}")) == {"message": "${HOME}"}
+
+
+def test_render_fills_passages():
+    record = Record(id="a", input="q")
+    assert render("P:\n{{passages}}\nQ: {{input}}", record, passages="[1] six hours") == "P:\n[1] six hours\nQ: q"
+    with pytest.raises(ValueError, match="needs passages_from"):
+        render("{{passages}}", record)
+
+
+def test_format_passages():
+    assert format_passages(["Battery: 6 h", "Noise: 24 dB"], ["p12", "p7"]) == "[1] (p12) Battery: 6 h\n[2] (p7) Noise: 24 dB"
+    assert format_passages(["Battery: 6 h", "Noise: 24 dB"], ["p12"]) == "[1] Battery: 6 h\n[2] Noise: 24 dB"
+    assert format_passages([]) == ""
+
+
+OPENAI = "adapter: openai\nprovider: openai\nbase_url: https://api.test/v1\nmodel: m\n"
+
+
+def test_openai_prompts_are_checked_like_request_templates(tmp_path):
+    config = config_from(tmp_path, OPENAI + 'system_prompt: "You support {{metadata.product}}."\n'
+                                            'user_template: "{{input}} {{metadata.extra?}} {{question}}"\n')
+    issues = [str(issue) for issue in check_request_templates(config, [Record(id="q-1", input="q")])]
+    assert any("user_template: unknown placeholder {{question}}" in issue for issue in issues), issues
+    assert any(issue.startswith("metadata.product: the request template needs it, but 1 record(s)")
+               for issue in issues), issues
+    assert not any("metadata.extra" in issue for issue in issues)
+
+
+def test_passages_placeholder_needs_passages_from(tmp_path):
+    config = config_from(tmp_path, OPENAI + 'user_template: "{{passages}} {{input}}"\n')
+    [issue] = check_request_templates(config, [])
+    assert "{{passages}} needs passages_from" in issue.message
+    http = config_from(tmp_path, 'adapter: http\nrequest:\n  url: https://x.test\n  body:\n'
+                                 '    context: "{{passages}}"\nresponse:\n  actual_output: answer\n')
+    [issue] = check_request_templates(http, [])
+    assert "only the openai adapter has" in issue.message
+
+
+def test_passages_from_needs_the_passages_placeholder(tmp_path):
+    config = config_from(tmp_path, OPENAI + "passages_from: runs/r\n")
+    [issue] = check_request_templates(config, [])
+    assert "no prompt uses {{passages}}" in issue.message

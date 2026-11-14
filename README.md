@@ -8,7 +8,9 @@ when the evidence supports it.
 
 **Status:** early development. Every command works: `validate`, `run`,
 `judge`, `label` (checking the judge against hand labels), `report` (with 95%
-ranges and flip rates) and `compare` (paired verdicts and CI gates).
+ranges and flip rates) and `compare` (paired verdicts and CI gates). Apps
+connect over HTTP, or a model is tested directly through any OpenAI-compatible
+API, optionally on the passages an earlier run retrieved.
 
 ## Docs
 

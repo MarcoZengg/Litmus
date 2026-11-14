@@ -27,6 +27,7 @@ from litmus.adapters import BudgetExhausted, Limiter
 from litmus.appconfig import Limits, _is_int, _limits
 from litmus.dataset import BEHAVIORS, Dataset, Issue, Manifest, Record
 from litmus.metrics import NOT_ANSWERED
+from litmus.templates import format_passages as passage_lines
 
 JUDGE_METRICS = ("correctness", "faithfulness", "rubric", "behavior")
 DEFAULT_METRICS = ["correctness", "faithfulness", "behavior"]
@@ -282,10 +283,7 @@ def plan_judgments(dataset: Dataset, rows: list[dict], config: JudgeConfig, glas
 
 
 def format_passages(row: dict) -> str:
-    texts = row.get("retrieval_context") or []
-    ids = row.get("retrieved_context_ids") or []
-    return "\n".join(f"[{n}] ({ids[n - 1]}) {text}" if len(ids) == len(texts) else f"[{n}] {text}"
-                     for n, text in enumerate(texts, 1))
+    return passage_lines(row.get("retrieval_context") or [], row.get("retrieved_context_ids") or [])
 
 
 def _prompt(config: JudgeConfig, metric: str, record: Record, row: dict) -> str:

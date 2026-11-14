@@ -88,8 +88,64 @@ def test_allowed_hosts_needs_a_written_out_host(tmp_path):
     assert "must be written out" in issue.message
 
 
+OPENAI = "adapter: openai\nprovider: openai\nbase_url: https://api.test/v1\nmodel: m\n"
+
+
+def test_openai_defaults(tmp_path):
+    config, issues = load(tmp_path, OPENAI)
+    assert issues == []
+    settings = config.openai
+    assert (settings.base_url, settings.model, settings.api_key_env) == ("https://api.test/v1", "m", None)
+    assert settings.system_prompt is None and settings.user_template == "{{input}}"
+    assert (settings.temperature, settings.timeout_s, settings.extra, settings.json_mode) == (0, 60, {}, False)
+    assert settings.passages_from is None
+    assert config.request is None and config.response == {} and config.provider == "openai"
+
+
+def test_openai_settings(tmp_path):
+    config, issues = load(tmp_path, OPENAI + "api_key_env: OPENAI_API_KEY\ntemperature: null\ntimeout_s: 90\n"
+                                             "extra:\n  max_tokens: 500\njson_mode: true\n"
+                                             "passages_from: runs/2026-11-20_glass\n"
+                                             'user_template: "{{passages}} {{input}}"\n')
+    assert issues == []
+    settings = config.openai
+    assert settings.api_key_env == "OPENAI_API_KEY" and settings.temperature is None and settings.timeout_s == 90
+    assert settings.extra == {"max_tokens": 500} and settings.json_mode is True
+    assert settings.passages_from == tmp_path / "runs" / "2026-11-20_glass"  # relative to the config file
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("adapter: openai\nbase_url: https://api.test/v1\nmodel: m\n", "'provider' is required for the openai adapter"),
+    (OPENAI.replace("https://api.test/v1", "api.test"), "'base_url' must start with http"),
+    (OPENAI.replace("model: m\n", ""), "'model' is required"),
+    (OPENAI + "api_key_env: MY-KEY\n", "'api_key_env' must be the name of an environment variable"),
+    (OPENAI + "temperature: -1\n", "'temperature' must be a number"),
+    (OPENAI + "timeout_s: 0\n", "'timeout_s' must be a positive number"),
+    (OPENAI + "extra: [1]\n", "'extra' must be a list of settings"),
+    (OPENAI + "extra:\n  model: other\n", "'extra' can't set model or messages"),
+    (OPENAI + "json_mode: yes please\n", "'json_mode' must be true or false"),
+    (OPENAI + "system_prompt: ''\n", "'system_prompt' must be text"),
+    (OPENAI + "passages_from: 3\n", "'passages_from' must be a path"),
+    (OPENAI + "request:\n  url: https://x.test\n", "'request' is only for the http adapter"),
+    (OPENAI + "response:\n  status: s\n", "'response.actual_output' is required"),
+    (MINIMAL + "model: m\n", "'model' is only for the openai adapter"),
+])
+def test_openai_config_errors(tmp_path, text, expected):
+    config, issues = load(tmp_path, text)
+    assert config is None
+    assert any(expected in str(issue) for issue in issues), [str(i) for i in issues]
+
+
+def test_check_env_names_the_openai_key(tmp_path):
+    config, _ = load(tmp_path, OPENAI + "api_key_env: OPENAI_API_KEY\n")
+    assert [issue.message for issue in check_env(config, {})] == ["environment variable OPENAI_API_KEY is not set"]
+    assert check_env(config, {"OPENAI_API_KEY": "k"}) == []
+    config, _ = load(tmp_path, OPENAI)  # local servers often need no key
+    assert check_env(config, {}) == []
+
+
 def test_allowed_providers(tmp_path):
-    config, _ = load(tmp_path, "adapter: openai\nprovider: openai\nmodel: m\n")
+    config, _ = load(tmp_path, "adapter: openai\nprovider: openai\nbase_url: https://api.test/v1\nmodel: m\n")
     manifest = Manifest(name="d", version=1, allowed_providers=["anthropic"])
     [issue] = check_allowed(manifest, config, {})
     assert "provider openai isn't in the dataset's allowed_providers" in issue.message

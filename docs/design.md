@@ -93,6 +93,9 @@ Python 3.12, Typer (commands), httpx (HTTP adapter), PyYAML, jmespath, NumPy
 - Failed calls are not retried by default. They count as failures, and the
   error rate is reported separately.
 - Dataset records can carry `metadata` that request templates use (section 5).
+- Answer models in a RAG app are compared on replayed passages: the
+  OpenAI-compatible adapter's `passages_from` (below) gives every model the
+  passages an earlier run retrieved.
 
 ### Two integration levels
 
@@ -172,13 +175,52 @@ calls are wasted.
 
 ### OpenAI-compatible adapter
 
-Evaluates a model directly, without a RAG app. It sends `input` as the user
-message, with an optional system prompt, and reads the reply. It is
-black-box only. Use it to compare models on the same dataset, for example a
-base model against a fine-tuned one.
+Evaluates a model directly, through any OpenAI-compatible chat completions
+API: OpenAI, DashScope's compatible mode, or a local vLLM server. Use it to
+compare models on the same dataset, for example a base model against a
+fine-tuned one.
 
-Config: `base_url`, `model`, the API key's environment variable,
-`system_prompt`, `temperature`.
+```yaml
+name: qwen3-8b-base
+adapter: openai
+provider: self-hosted        # checked against the dataset's allowed_providers
+base_url: http://127.0.0.1:8000/v1
+model: Qwen/Qwen3-8B
+api_key_env: VLLM_API_KEY    # optional: the environment variable with the key
+system_prompt: |             # optional; may use {{metadata.<key>}} and {{passages}}
+  Answer from the passages only. If they don't cover the question, say so.
+user_template: |             # optional; the default is "{{input}}"
+  Passages:
+  {{passages}}
+
+  Question: {{input}}
+passages_from: runs/2026-11-20_glass-box   # optional: replay a run's passages
+temperature: 0               # null leaves it to the API
+timeout_s: 60
+extra:                       # optional: added to every request body
+  max_tokens: 800
+json_mode: false             # true asks for a JSON object reply
+```
+
+- **The reply is the answer** by default. With a `response` section, the reply
+  is read as JSON (a code fence around it is fine) and fields are found with
+  JMESPath, as in the HTTP adapter, so a `status` can feed `behavior_map`.
+- **Token counts** come from the API's `usage`, unless `response` maps them.
+- **Errors** are the HTTP adapter's, plus `invalid_reply` (not a chat
+  completions reply), `no_answer` (no text, for example from a reasoning model
+  that ran out of tokens) and `invalid_json` (there's a `response` section, but
+  the reply isn't JSON).
+
+**Replaying passages.** Sending only the question isn't a fair test of a RAG
+answer model. `passages_from` points to an earlier glass-box run, or to a JSONL
+file with the same `id`, `retrieved_context_ids` and `retrieval_context`
+fields. Each question's saved passages fill `{{passages}}`, numbered as
+`[1] (id) text`, and are recorded as that reply's passages. So every model
+answers from exactly the same evidence, the run counts as glass-box, and
+faithfulness can be judged. The lowest repeat with passage texts is used, and
+failed calls are skipped. `validate` and `run` refuse a source run made with
+another version of the dataset. They warn about questions without saved
+passages, whose `{{passages}}` is left empty.
 
 ### Python function adapter
 
@@ -687,11 +729,5 @@ Litmus.
 - Should the minimum change size for latency and cost be relative (e.g. 10%)
   rather than in absolute units?
 - Correcting judge-metric scores for measured judge error (after v1).
-- **Comparing answer models inside a RAG app** (the fine-tuning gate). The
-  OpenAI-compatible adapter only sends the question, without retrieved
-  passages, so it isn't a fair test of a RAG answer model. Either switch the
-  model inside the app (e.g. a staging setting) and call it through the HTTP
-  adapter, or replay saved retrieval results to the model. Decide before
-  week 3.
 - For apps with daily call caps, are 3 repeats affordable, or does the dataset
   need splitting across days?
